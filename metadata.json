@@ -1,0 +1,5 @@
+{
+  "name": "Copy of SENTRA-X1",
+  "description": "A web application that simulates an autonomous and adaptive firewall, visualizing traffic, detecting attacks, managing rules, and displaying threat level trends.",
+  "requestFramePermissions": []
+}
