@@ -1,57 +1,51 @@
-export enum PacketAction {
-  ALLOWED = 'ALLOWED',
-  DENIED = 'DENIED',
-}
+export type ThreatLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export type SystemStatus = 'ACTIVE' | 'ANALYZING' | 'ERROR' | 'INITIALIZING';
+export type Protocol = 'TCP' | 'UDP' | 'ICMP';
+export type RuleAction = 'ALLOW' | 'BLOCK';
+export type AttackType = 'Port Scan' | 'DDoS Flood' | 'Data Exfiltration';
 
 export interface Packet {
   id: string;
-  timestamp: Date;
+  timestamp: string;
   sourceIp: string;
-  sourcePort: number;
   destIp: string;
+  sourcePort: number;
   destPort: number;
-  protocol: 'TCP' | 'UDP' | 'ICMP';
+  protocol: Protocol;
+  action: 'Permitted' | 'Blocked'; // For display purposes
   payload: string;
-  action: PacketAction;
-  isAttackPacket: boolean;
-}
-
-export enum RuleAction {
-  ALLOW = 'ALLOW',
-  DENY = 'DENY',
+  isAttack?: boolean;
 }
 
 export interface FirewallRule {
   id: string;
   action: RuleAction;
-  target: string; // IP address or CIDR block
+  target: string; // e.g., IP address '192.168.1.1' or port 'PORT:8080'
   description: string;
-  isAuto: boolean; // Differentiate between adaptive and manual rules
+  source: 'AI' | 'USER';
 }
 
-export enum AttackType {
-  DDOS_FLOOD = 'DDoS Flood',
-  PORT_SCAN = 'Port Scan',
-  SYN_FLOOD = 'SYN Flood',
+export interface AnomalyDataPoint {
+  ip: string;
+  score: number; // 0 to 1
+  reason: string;
 }
 
-export interface Attack {
-  type: AttackType;
-  targetIp: string;
-  sourceIp?: string;
+export interface GeminiAnalysisResult {
+  threatLevel: ThreatLevel;
+  analysisSummary: string;
+  ruleSuggestions: Pick<FirewallRule, 'action' | 'target' | 'description'>[];
+  anomalyHotspots: AnomalyDataPoint[];
 }
 
-export interface ThreatHistoryPoint {
-  time: string;
+export interface ProtocolDataPoint {
+    name: string;
+    value: number;
+}
+
+// FIX: Add missing ThreatDataPoint type for the ThreatHistoryChart component.
+export interface ThreatDataPoint {
+  timestamp: string;
   level: number;
-}
-
-export interface IpInfo {
-  status: 'success' | 'fail';
-  country?: string;
-  city?: string;
-  isp?: string;
-  org?: string;
-  query: string;
-  message?: string;
+  levelName: ThreatLevel;
 }

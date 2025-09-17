@@ -1,5 +1,5 @@
 {
-  "name": "Copy of SENTRA-X1",
-  "description": "A web application that simulates an autonomous and adaptive firewall, visualizing traffic, detecting attacks, managing rules, and displaying threat level trends.",
+  "name": "SENTRA",
+  "description": "A sophisticated dashboard that simulates a next-generation firewall powered by Gemini. It visualizes network traffic, uses AI to analyze threats, and autonomously adapts its security rules in real-time.",
   "requestFramePermissions": []
 }

@@ -1,251 +1,241 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Packet, FirewallRule, Attack, ThreatHistoryPoint, RuleAction, PacketAction, AttackType } from './types';
-import StatusIndicator from './components/StatusIndicator';
-import FirewallRules from './components/FirewallRules';
-import TrafficLog from './components/TrafficLog';
-import ThreatLevelChart from './components/ThreatLevelChart';
-import RuleManager from './components/RuleManager';
-import AttackAnalyticsChart from './components/AttackAnalyticsChart';
-import IpLookupModal from './components/IpLookupModal';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Header } from './components/Header';
+import { MetricCard } from './components/MetricCard';
+import { ThreatLevelGauge } from './components/ThreatLevelGauge';
+import { TrafficLog } from './components/TrafficLog';
+import { RulesTable } from './components/RulesTable';
+import { RuleEditor } from './components/RuleEditor';
+import { ProtocolRadarChart } from './components/ProtocolRadarChart';
+import { AnomalyHeatmap } from './components/AnomalyHeatmap';
+import { ShieldExclamationIcon, PlusIcon } from './components/Icons';
+import { analyzeTraffic } from './services/geminiService';
+import { generateTrafficPacket, getAttackTraffic } from './services/trafficSimulator';
+import type { Packet, FirewallRule, ThreatLevel, SystemStatus, AttackType, AnomalyDataPoint, ProtocolDataPoint } from './types';
+import { ATTACK_TYPES, INITIAL_RULES } from './constants';
 
-const YOUR_SIMULATED_IP = '192.168.1.50';
-
-const generateRealisticPayload = (protocol: 'TCP' | 'UDP' | 'ICMP', destPort: number, attackType?: AttackType): string => {
-    const randomHex = () => Math.random().toString(16).substring(2, 10).toUpperCase();
-
-    if (attackType) {
-        switch (attackType) {
-            case AttackType.SYN_FLOOD:
-                return `[TCP SYN] SEQ=${Math.floor(Math.random() * 999999)}, ACK=0, Win=8192`;
-            case AttackType.PORT_SCAN:
-                return `[TCP Connection Attempt] SEQ=${Math.floor(Math.random() * 999999)}`;
-            case AttackType.DDOS_FLOOD:
-                return `[Fragmented Data] id=0x${randomHex()} offset=0 MF`;
-        }
-    }
-
-    if (protocol === 'TCP' && (destPort === 80 || destPort === 443)) {
-        return `GET /api/data HTTP/1.1\nHost: api.service.com\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\nAccept: application/json`;
-    }
-    if (protocol === 'UDP' && destPort === 53) {
-        return `DNS Standard query 0x${randomHex()} A IN www.example-site.com`;
-    }
-    if (protocol === 'ICMP') {
-        return `ICMP Echo (ping) request id=0x${randomHex().substring(0,4)}, seq=1, ttl=64`;
-    }
-    return `[DATA] len=${Math.floor(Math.random() * 128)} 0x${randomHex()} 0x${randomHex()}`;
-};
-
-// Helper function for matching IPs to rule targets
-const ipMatchesTarget = (ip: string, target: string): boolean => {
-    if (target === '0.0.0.0/0') { // Catch-all rule
-        return true;
-    }
-    if (target.includes('/')) { // Simple CIDR check
-        const [targetPrefix, mask] = target.split('/');
-        // Only implementing /24 for this simulation
-        if (mask === '24') {
-            const ipPrefix = ip.split('.').slice(0, 3).join('.');
-            const rulePrefix = targetPrefix.split('.').slice(0, 3).join('.');
-            return ipPrefix === rulePrefix;
-        }
-        return false;
-    }
-    return ip === target; // Exact IP match
-};
-
+const MAX_LOG_SIZE = 100;
+const SIMULATION_INTERVAL = 6000;
 
 const App: React.FC = () => {
-    const [threatLevel, setThreatLevel] = useState<number>(10);
-    const [currentAttack, setCurrentAttack] = useState<Attack | null>(null);
-    const [rules, setRules] = useState<FirewallRule[]>([
-        { id: '1', action: RuleAction.ALLOW, target: '192.168.1.0/24', description: 'Allow local network traffic', isAuto: false },
-        { id: '2', action: RuleAction.DENY, target: '0.0.0.0/0', description: 'Default deny all', isAuto: true },
-    ]);
-    const [trafficLog, setTrafficLog] = useState<Packet[]>([]);
-    const [threatHistory, setThreatHistory] = useState<ThreatHistoryPoint[]>([]);
-    const [attackHistory, setAttackHistory] = useState<Attack[]>([]);
-    const [selectedRule, setSelectedRule] = useState<FirewallRule | null>(null);
-    const [lookupIp, setLookupIp] = useState<string | null>(null);
+  const [status, setStatus] = useState<SystemStatus>('INITIALIZING');
+  const [packets, setPackets] = useState<Packet[]>([]);
+  const [rules, setRules] = useState<FirewallRule[]>(INITIAL_RULES);
+  const [threatLevel, setThreatLevel] = useState<ThreatLevel>('LOW');
+  const [metrics, setMetrics] = useState({ analyzed: 0, blocked: 0, adapted: 0 });
+  const [analysis, setAnalysis] = useState('System is initializing...');
+  const [currentAttack, setCurrentAttack] = useState<AttackType | null>(null);
+  const [anomalyHotspots, setAnomalyHotspots] = useState<AnomalyDataPoint[]>([]);
+  const [protocolData, setProtocolData] = useState<ProtocolDataPoint[]>([]);
+  const [selectedPacketId, setSelectedPacketId] = useState<string | null>(null);
+  const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
+  const [ruleToEdit, setRuleToEdit] = useState<FirewallRule | null>(null);
 
+  const packetsRef = useRef(packets);
+  packetsRef.current = packets;
 
-    const generateRandomIp = () => `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+  const handlePacketSelect = (packetId: string) => {
+    setSelectedPacketId(prevId => (prevId === packetId ? null : packetId));
+  };
+  
+  // Rule Management Handlers
+  const handleOpenRuleEditor = (rule: FirewallRule | null) => {
+      setRuleToEdit(rule);
+      setIsRuleEditorOpen(true);
+  }
 
-    const simulateFirewall = useCallback(() => {
-        // Simulate threat level changes based on attack type
-        setThreatLevel(prev => {
-            let newLevel;
-            if (currentAttack) {
-                let increase = 0;
-                switch (currentAttack.type) {
-                    case AttackType.DDOS_FLOOD:
-                        increase = Math.random() * 15;
-                        break;
-                    case AttackType.SYN_FLOOD:
-                        increase = Math.random() * 10;
-                        break;
-                    case AttackType.PORT_SCAN:
-                        increase = Math.random() * 5;
-                        break;
-                    default:
-                        increase = Math.random() * 8;
-                }
-                newLevel = Math.min(100, prev + increase);
-            } else {
-                newLevel = Math.max(0, prev - Math.random() * 5);
-            }
-            const time = new Date().toLocaleTimeString();
-            setThreatHistory(prevHistory => [...prevHistory.slice(-59), { time, level: newLevel }]);
-            return newLevel;
+  const handleCloseRuleEditor = () => {
+      setRuleToEdit(null);
+      setIsRuleEditorOpen(false);
+  }
+
+  const handleSaveRule = (ruleData: Omit<FirewallRule, 'id' | 'source'> & { id?: string }) => {
+      if (ruleData.id) { // Editing existing rule
+          setRules(prevRules => prevRules.map(r => r.id === ruleData.id ? { ...r, ...ruleData } : r));
+      } else { // Adding new rule
+          const newRule: FirewallRule = {
+              ...ruleData,
+              id: crypto.randomUUID(),
+              source: 'USER',
+          };
+          setRules(prevRules => [newRule, ...prevRules]);
+      }
+      handleCloseRuleEditor();
+  }
+
+  const handleDeleteRule = (ruleId: string) => {
+      setRules(prevRules => prevRules.filter(r => r.id !== ruleId));
+  }
+  
+  const calculateProtocolDistribution = (currentPackets: Packet[]) => {
+      const trackedSubjects = [
+          { key: 'TCP', name: 'TCP', type: 'protocol' },
+          { key: 'UDP', name: 'UDP', type: 'protocol' },
+          { key: 'ICMP', name: 'ICMP', type: 'protocol' },
+          { key: '80', name: 'HTTP (80)', type: 'port' },
+          { key: '443', name: 'SSL (443)', type: 'port' },
+          { key: '53', name: 'DNS (53)', type: 'port' },
+          { key: '22', name: 'SSH (22)', type: 'port' },
+      ];
+
+      const counts = trackedSubjects.reduce((acc, subject) => ({ ...acc, [subject.name]: 0 }), {} as Record<string, number>);
+
+      currentPackets.slice(0, 50).forEach(p => {
+          trackedSubjects.forEach(subject => {
+              if (subject.type === 'protocol' && p.protocol === subject.key) {
+                  counts[subject.name]++;
+              } else if (subject.type === 'port' && p.destPort.toString() === subject.key) {
+                  counts[subject.name]++;
+              }
+          });
+      });
+
+      const chartData: ProtocolDataPoint[] = Object.entries(counts).map(([name, value]) => ({
+          name,
+          value,
+      }));
+      setProtocolData(chartData);
+  }
+
+  const runSimulationCycle = useCallback(async () => {
+    setStatus('ANALYZING');
+    
+    // Decide if an attack should happen
+    const isAttacking = Math.random() < 0.3; // 30% chance of attack traffic
+    let newPackets: Packet[];
+    let attackType: AttackType | null = null;
+    if (isAttacking) {
+      attackType = ATTACK_TYPES[Math.floor(Math.random() * ATTACK_TYPES.length)];
+      newPackets = getAttackTraffic(attackType);
+    } else {
+      newPackets = Array.from({ length: Math.floor(Math.random() * 6) + 5 }, () => generateTrafficPacket());
+    }
+    setCurrentAttack(attackType);
+
+    const latestPackets = [...newPackets, ...packetsRef.current].slice(0, MAX_LOG_SIZE);
+    setPackets(latestPackets);
+    calculateProtocolDistribution(latestPackets);
+
+    try {
+      const result = await analyzeTraffic(latestPackets.slice(0, 20)); // Analyze recent traffic
+      if (result) {
+        setThreatLevel(result.threatLevel);
+        setAnalysis(result.analysisSummary);
+        setAnomalyHotspots(result.anomalyHotspots || []);
+        
+        let adaptedCount = 0;
+        let blockedCount = 0;
+        const existingRuleTargets = new Set(rules.map(r => r.target));
+        
+        result.ruleSuggestions.forEach(suggestion => {
+          if (!existingRuleTargets.has(suggestion.target)) {
+            const newRule: FirewallRule = { ...suggestion, id: crypto.randomUUID(), source: 'AI' };
+            setRules(prev => [newRule, ...prev].slice(0, 20));
+            adaptedCount++;
+            existingRuleTargets.add(suggestion.target);
+          }
         });
 
-        // Simulate various types of attacks
-        if (!currentAttack && Math.random() < 0.05) {
-            const attackTarget = YOUR_SIMULATED_IP;
-            const attackTypes: AttackType[] = [AttackType.DDOS_FLOOD, AttackType.PORT_SCAN, AttackType.SYN_FLOOD];
-            const selectedAttackType = attackTypes[Math.floor(Math.random() * attackTypes.length)];
-            
-            let attackerIp: string | undefined;
-            if (selectedAttackType === AttackType.PORT_SCAN || selectedAttackType === AttackType.SYN_FLOOD) {
-                attackerIp = generateRandomIp(); // A single source is identified
-            }
-
-            const newAttack: Attack = { type: selectedAttackType, targetIp: attackTarget, sourceIp: attackerIp };
-            setCurrentAttack(newAttack);
-            setAttackHistory(prev => [...prev, newAttack]);
-
-            // Automatically add a rule to block the source of simpler attacks
-            if (attackerIp) {
-                setRules(prev => [...prev, { id: `auto-${Date.now()}`, action: RuleAction.DENY, target: attackerIp, description: `AUTO: Block suspicious ${selectedAttackType} source`, isAuto: true }]);
-            }
-        } else if (currentAttack && Math.random() < 0.1) {
-            setCurrentAttack(null);
-        }
-        
-        // Generate new traffic packet based on current state (attack or normal)
-        const isAttackPacket = currentAttack ? Math.random() < 0.7 : false;
-
-        let protocol: 'TCP' | 'UDP' | 'ICMP' = 'TCP';
-        let sourceIp = '0.0.0.0';
-        let destIp = '0.0.0.0';
-        let destPort = 80;
-        let sourcePort = 12345;
-
-        if (isAttackPacket && currentAttack) {
-            destIp = currentAttack.targetIp;
-            sourceIp = currentAttack.sourceIp || generateRandomIp(); // Use stored IP for some attacks, or random for DDoS
-
-            switch (currentAttack.type) {
-                case AttackType.DDOS_FLOOD:
-                    protocol = Math.random() > 0.5 ? 'TCP' : 'UDP';
-                    destPort = Math.random() > 0.7 ? 80 : 443;
-                    break;
-                case AttackType.PORT_SCAN:
-                    protocol = 'TCP';
-                    destPort = Math.floor(Math.random() * 1024); // Scan well-known ports
-                    break;
-                case AttackType.SYN_FLOOD:
-                    protocol = 'TCP';
-                    destPort = 80;
-                    break;
-            }
-        } else {
-            // Normal traffic generation
-            const isFromYou = !isAttackPacket && Math.random() < 0.3;
-            protocol = ['TCP', 'UDP', 'ICMP'][Math.floor(Math.random() * 3)] as 'TCP' | 'UDP' | 'ICMP';
-            sourceIp = isFromYou ? YOUR_SIMULATED_IP : '192.168.1.' + Math.floor(Math.random() * 100 + 10);
-            sourcePort = Math.floor(Math.random() * 65535);
-            destIp = generateRandomIp();
-            destPort = Math.floor(Math.random() * 65535);
-        }
-
-        const newPacket: Omit<Packet, 'action' | 'id'> = {
-            timestamp: new Date(),
-            sourceIp: sourceIp,
-            sourcePort: sourcePort,
-            destIp: destIp,
-            destPort: destPort,
-            protocol: protocol,
-            payload: generateRealisticPayload(protocol, destPort, isAttackPacket ? currentAttack?.type : undefined),
-            isAttackPacket,
-        };
-        
-        // Process packet against rules, with DENY rules having priority.
-        const sortedRules = [...rules].sort((a, b) => {
-            if (a.target === '0.0.0.0/0') return 1; // Default rule should be last
-            if (b.target === '0.0.0.0/0') return -1;
-            if (a.action === RuleAction.DENY && b.action !== RuleAction.DENY) return -1;
-            if (a.action !== RuleAction.DENY && b.action === RuleAction.DENY) return 1;
-            return 0;
+        // Simple blocking simulation
+        newPackets.forEach(p => {
+          const isBlocked = rules.some(r => r.action === 'BLOCK' && (r.target === p.sourceIp || r.target === `PORT:${p.destPort}`));
+          if(isBlocked) blockedCount++;
         });
 
-        let action: PacketAction = PacketAction.DENIED; // Default to DENIED
-        for (const rule of sortedRules) {
-             // We primarily check the source IP for ingress filtering
-            if (ipMatchesTarget(newPacket.sourceIp, rule.target)) {
-                action = rule.action === RuleAction.ALLOW ? PacketAction.ALLOWED : PacketAction.DENIED;
-                break; // First match wins
-            }
-        }
+        setMetrics(prev => ({
+          analyzed: prev.analyzed + newPackets.length,
+          blocked: prev.blocked + blockedCount,
+          adapted: prev.adapted + adaptedCount
+        }));
+      }
+      setStatus('ACTIVE');
+    } catch (error) {
+      console.error("Error during simulation cycle:", error);
+      setStatus('ERROR');
+      setAnalysis("An error occurred during threat analysis.");
+    }
+  }, [rules]);
 
-        const processedPacket: Packet = {
-            ...newPacket,
-            id: `pkt-${Date.now()}-${Math.random()}`,
-            action: action
-        };
-        
-        setTrafficLog(prevLog => [processedPacket, ...prevLog.slice(0, 99)]);
-    }, [currentAttack, rules]);
+  useEffect(() => {
+    const intervalId = setInterval(runSimulationCycle, SIMULATION_INTERVAL);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    runSimulationCycle(); // Initial run
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    useEffect(() => {
-        const interval = setInterval(simulateFirewall, 1500);
-        return () => clearInterval(interval);
-    }, [simulateFirewall]);
-    
-    const handleAddRule = (rule: Omit<FirewallRule, 'id' | 'isAuto'>) => {
-        const newRule = { ...rule, id: `manual-${Date.now()}`, isAuto: false };
-        setRules(prev => [...prev, newRule]);
-    };
-    
-    const handleUpdateRule = (updatedRule: FirewallRule) => {
-        setRules(prev => prev.map(r => r.id === updatedRule.id ? updatedRule : r));
-        setSelectedRule(null);
-    };
-
-    const handleDeleteRule = (ruleId: string) => {
-        setRules(prev => prev.filter(r => r.id !== ruleId));
-        setSelectedRule(null);
-    };
-
-    return (
-        <div className="min-h-screen bg-gray-900 text-gray-200 p-4 sm:p-6 lg:p-8 font-sans">
-            <header className="mb-8">
-                <h1 className="text-4xl font-bold text-center text-indigo-400">Autonomous & Adaptive Firewall</h1>
-                <p className="text-center text-gray-400 mt-2">Monitoring network traffic and adapting to threats in real-time.</p>
-            </header>
-
-            <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <div className="lg:col-span-2 space-y-8">
-                    <StatusIndicator threatLevel={threatLevel} currentAttack={currentAttack} />
-                    <TrafficLog trafficLog={trafficLog} currentAttack={currentAttack} yourSimulatedIp={YOUR_SIMULATED_IP} onIpClick={setLookupIp} />
-                </div>
-                <div className="space-y-8">
-                    <ThreatLevelChart data={threatHistory} />
-                    <AttackAnalyticsChart attackHistory={attackHistory} onIpClick={setLookupIp} />
-                    <FirewallRules rules={rules} onSelectRule={setSelectedRule} selectedRuleId={selectedRule?.id} />
-                    <RuleManager 
-                        onAddRule={handleAddRule} 
-                        onUpdateRule={handleUpdateRule}
-                        onDeleteRule={handleDeleteRule}
-                        selectedRule={selectedRule}
-                        clearSelection={() => setSelectedRule(null)}
-                    />
-                </div>
-            </main>
-            
-            <IpLookupModal ip={lookupIp} onClose={() => setLookupIp(null)} />
+  return (
+    <div className="min-h-screen bg-base p-4 lg:p-6 flex flex-col gap-4 lg:gap-6">
+      <Header status={status} />
+      
+      <main className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-6 flex-grow">
+        {/* Left Column */}
+        <div className="lg:col-span-1 xl:col-span-1 flex flex-col gap-4 lg:gap-6">
+          <ThreatLevelGauge level={threatLevel} />
+          <MetricCard title="Packets Analyzed" value={metrics.analyzed.toLocaleString()} />
+          <MetricCard title="Threats Blocked" value={metrics.blocked.toLocaleString()} />
+          <MetricCard title="Rules Adapted" value={metrics.adapted.toLocaleString()} />
         </div>
-    );
+
+        {/* Middle Column */}
+        <div className="lg:col-span-2 xl:col-span-2 flex flex-col gap-4 lg:gap-6 min-h-[500px]">
+          <div className="bg-surface p-4 rounded-lg border border-overlay flex-grow flex flex-col">
+            <h2 className="text-lg text-primary mb-2">Real-time Traffic Log</h2>
+            <div className="text-xs text-muted mb-2">
+              AI Analysis: <span className="text-subtle">{analysis}</span>
+            </div>
+            {currentAttack && (
+              <div className="bg-danger/10 border border-danger text-danger p-3 rounded-lg mb-2 text-sm flex items-center gap-3 animate-pulse-fast">
+                <ShieldExclamationIcon className="h-6 w-6 flex-shrink-0" />
+                <div>
+                  <strong className="font-bold block">ATTACK DETECTED: {currentAttack}</strong>
+                  <span>Malicious traffic patterns identified. Packets are highlighted below.</span>
+                </div>
+              </div>
+            )}
+            <TrafficLog 
+              packets={packets}
+              selectedPacketId={selectedPacketId}
+              onPacketSelect={handlePacketSelect}
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:gap-6">
+            <div className="bg-surface p-4 rounded-lg border border-overlay h-64 flex flex-col">
+              <AnomalyHeatmap data={anomalyHotspots} />
+            </div>
+            <div className="bg-surface p-4 rounded-lg border border-overlay h-64 flex flex-col">
+                <ProtocolRadarChart data={protocolData} />
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column */}
+        <div className="lg:col-span-3 xl:col-span-1 flex flex-col">
+          <div className="bg-surface p-4 rounded-lg border border-overlay flex-grow flex flex-col">
+            <div className="flex justify-between items-center mb-2">
+                <h2 className="text-lg text-primary">Adaptive Firewall Rules</h2>
+                <button 
+                    onClick={() => handleOpenRuleEditor(null)}
+                    className="flex items-center gap-1 px-3 py-1 bg-primary/20 text-primary text-xs font-bold rounded-full hover:bg-primary/40 transition-colors"
+                >
+                    <PlusIcon className="w-4 h-4" />
+                    <span>New Rule</span>
+                </button>
+            </div>
+            <p className="text-xs text-muted mb-4">AI-managed and user-defined security policies.</p>
+            <RulesTable rules={rules} onEdit={(rule) => handleOpenRuleEditor(rule)} onDelete={handleDeleteRule} />
+          </div>
+        </div>
+      </main>
+
+      {isRuleEditorOpen && (
+          <RuleEditor 
+            rule={ruleToEdit}
+            onSave={handleSaveRule}
+            onCancel={handleCloseRuleEditor}
+          />
+      )}
+    </div>
+  );
 };
 
 export default App;

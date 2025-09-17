@@ -3,40 +3,56 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SENTRA</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
-        darkMode: 'class',
         theme: {
           extend: {
             colors: {
-              'gray': {
-                850: '#182133',
-                900: '#121826',
-              },
+              'base': '#0a0a0a',
+              'surface': '#1a1a1a',
+              'overlay': '#2c2c2c',
+              'muted': '#808080',
+              'subtle': '#a4a4a4',
+              'primary': '#00ddff',
+              'primary-hover': '#33eaff',
+              'danger': '#ff4d4d',
+              'warning': '#ffc107',
+              'success': '#28a745',
+            },
+            fontFamily: {
+              'mono': ['"Fira Code"', 'Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
+            },
+            animation: {
+              'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'slide-in': 'slide-in 0.5s ease-out forwards',
+            },
+            keyframes: {
+              'slide-in': {
+                '0%': { transform: 'translateY(20px)', opacity: 0 },
+                '100%': { transform: 'translateY(0)', opacity: 1 },
+              }
             }
           }
         }
       }
     </script>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js"></script>
   <script type="importmap">
 {
   "imports": {
-    "recharts": "https://aistudiocdn.com/recharts@^3.1.2",
-    "react": "https://aistudiocdn.com/react@^19.1.1",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.16.0",
     "react/": "https://aistudiocdn.com/react@^19.1.1/",
+    "react": "https://aistudiocdn.com/react@^19.1.1",
+    "recharts": "https://aistudiocdn.com/recharts@^3.1.2",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/"
   }
 }
 </script>
 </head>
-  <body class="bg-gray-900 text-gray-200">
+  <body class="bg-base text-subtle font-mono">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>
